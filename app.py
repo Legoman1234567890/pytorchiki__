@@ -1,3 +1,4 @@
+import re
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -64,6 +65,57 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# ======================== ЗАГРУЗКА ДАННЫХ ========================
+
+# Регулярка для отсечения "хвостов" типа "Корпус 1", "Корп. 2", "Литер А", "Секция 3"
+_CORPUS_PATTERN = re.compile(
+    r"\s*[\(\[\-–—,:]?\s*"
+    r"(корпус|корп\.?|литер|секц(ия|\.)?|блок|строение|стр\.?|этап|очередь)"
+    r"\s*[№#]?\s*[\w\d\-–—/]*\s*[\)\]]?\s*$",
+    re.IGNORECASE,
+)
+
+
+def _strip_corpus(name: str) -> str:
+    """Убирает из названия хвосты вида 'Корпус 1', 'Литер А', 'Секция 3' и т.п."""
+    if not isinstance(name, str):
+        return ""
+    s = name.strip()
+    for _ in range(3):
+        new_s = _CORPUS_PATTERN.sub("", s).strip(" ,-–—")
+        if new_s == s:
+            break
+        s = new_s
+    return s
+
+
+def _extract_zhk_name(row) -> str:
+    """
+    Возвращает название ЖК:
+    1. Если есть отдельная колонка с полным названием — берём её.
+    2. Иначе чистим complex_name от 'Корпус N'.
+    3. Если после чистки пусто — фолбэк на застройщика+город.
+    """
+    for col in ("zhk_name", "residential_complex", "project_name", "jk_name", "complex_full_name"):
+        val = row.get(col)
+        if isinstance(val, str) and val.strip() and val.strip().lower() not in ("nan", "none"):
+            return val.strip()
+
+    raw = row.get("complex_name", "")
+    cleaned = _strip_corpus(raw) if isinstance(raw, str) else ""
+
+    if cleaned:
+        return cleaned
+
+    dev = row.get("developer")
+    city = row.get("city")
+    parts = [p for p in (dev, city) if isinstance(p, str) and p.strip()]
+    if parts:
+        return " · ".join(parts)
+
+    return "ЖК без названия"
+
+
 @st.cache_data
 def load():
     df = pd.read_csv("production_data_merged.csv")
@@ -99,6 +151,9 @@ def load():
         df["id"] = df.index.astype(str)
     df["id"] = df["id"].astype(str)
 
+    # Нормализация названия ЖК
+    df["zhk_name"] = df.apply(_extract_zhk_name, axis=1)
+
     return df
 
 
@@ -108,7 +163,9 @@ if df.empty:
     st.error("Файл production_data_merged.csv пуст или не найден.")
     st.stop()
 
-# ---------- session state ----------
+
+# ======================== SESSION STATE ========================
+
 if "favorites" not in st.session_state:
     st.session_state.favorites = set()
 if "selected_zhk" not in st.session_state:
@@ -119,6 +176,17 @@ if "active_tab" not in st.session_state:
     st.session_state.active_tab = "🏠 Карточки"
 if "last_clicked_marker_id" not in st.session_state:
     st.session_state.last_clicked_marker_id = None
+if "filters_version" not in st.session_state:
+    st.session_state.filters_version = 0
+
+
+def reset_filters():
+    """Сбрасывает все фильтры через смену версии ключей виджетов."""
+    for k in list(st.session_state.keys()):
+        if k.startswith("flt_"):
+            del st.session_state[k]
+    st.session_state.filters_version += 1
+    st.session_state.card_page = 1
 
 
 def toggle_fav(zhk_id):
@@ -132,13 +200,6 @@ def open_card(zhk_id):
     """Открыть карточку и переключиться на вкладку '📄 Карточка'."""
     st.session_state.selected_zhk = zhk_id
     st.session_state.active_tab = "📄 Карточка"
-
-
-def reset_filters():
-    for k in list(st.session_state.keys()):
-        if k.startswith("flt_"):
-            del st.session_state[k]
-    st.session_state.card_page = 1
 
 
 def fmt_price(row):
@@ -168,128 +229,150 @@ METRO_MAX_REAL = (
 )
 
 
+# ======================== ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ ========================
+# Пересчитываются при каждой смене filters_version
+v = st.session_state.filters_version
+
+default_sources = (
+    sorted(df["source"].dropna().unique().tolist())
+    if "source" in df.columns else []
+)
+default_price_to = (
+    float(np.nanmax(df["price_mln"]))
+    if "price_mln" in df and df["price_mln"].notna().any() else 0.0
+)
+default_floor_to = (
+    int(np.nanmax(df["floor"]))
+    if "floor" in df and df["floor"].notna().any() else 100
+)
+default_metro_to = METRO_MAX_REAL
+
+
 # ======================== SIDEBAR ========================
 with st.sidebar:
     st.header("🔍 Фильтры")
     st.button("♻️ Сбросить фильтры", on_click=reset_filters, use_container_width=True)
 
+    # ------- ГОРОД -------
     if "city" in df.columns:
         cities = sorted(df["city"].dropna().unique().tolist())
         sel_cities = st.multiselect(
             "Город", cities,
-            default=st.session_state.get("flt_cities", []),
-            key="flt_cities",
+            default=[],
+            key=f"flt_cities_{v}",
         )
     else:
         sel_cities = []
 
+    # ------- ИСТОЧНИК -------
     if "source" in df.columns:
         sources = sorted(df["source"].dropna().unique().tolist())
         sel_sources = st.multiselect(
             "Источник данных", sources,
-            default=st.session_state.get("flt_sources", sources),
-            key="flt_sources",
+            default=default_sources,
+            key=f"flt_sources_{v}",
         )
     else:
         sel_sources = []
 
+    # ------- ЗАСТРОЙЩИК -------
     if "developer" in df.columns:
         developers = sorted(df["developer"].dropna().unique().tolist())
         sel_devs = st.multiselect(
             "Застройщик", developers,
-            default=st.session_state.get("flt_devs", []),
-            key="flt_devs",
+            default=[],
+            key=f"flt_devs_{v}",
         )
     else:
         sel_devs = []
 
+    # ------- КЛАСС -------
     if "complex_class" in df.columns:
         classes = sorted(df["complex_class"].dropna().unique().tolist())
         sel_classes = st.multiselect(
             "Класс ЖК", classes,
-            default=st.session_state.get("flt_classes", []),
-            key="flt_classes",
+            default=[],
+            key=f"flt_classes_{v}",
         )
     else:
         sel_classes = []
 
+    # ------- ЦЕНА -------
     st.markdown("**Цена, млн ₽**")
     col_p1, col_p2 = st.columns(2)
     price_from = col_p1.number_input(
         "от", min_value=0.0,
-        value=st.session_state.get("flt_price_from", 0.0),
-        step=0.5, key="flt_price_from", label_visibility="collapsed",
+        value=0.0,
+        step=0.5, key=f"flt_price_from_{v}", label_visibility="collapsed",
     )
     price_to = col_p2.number_input(
         "до", min_value=0.0,
-        value=st.session_state.get(
-            "flt_price_to",
-            float(np.nanmax(df["price_mln"])) if "price_mln" in df and df["price_mln"].notna().any() else 0.0,
-        ),
-        step=0.5, key="flt_price_to", label_visibility="collapsed",
+        value=default_price_to,
+        step=0.5, key=f"flt_price_to_{v}", label_visibility="collapsed",
     )
     st.caption("от / до")
 
+    # ------- ЭТАЖ -------
     st.markdown("**Этаж**")
     col_f1, col_f2 = st.columns(2)
     floor_from = col_f1.number_input(
         "от ", min_value=0,
-        value=st.session_state.get("flt_floor_from", 0),
-        step=1, key="flt_floor_from", label_visibility="collapsed",
+        value=0,
+        step=1, key=f"flt_floor_from_{v}", label_visibility="collapsed",
     )
     floor_to = col_f2.number_input(
         "до ", min_value=0,
-        value=st.session_state.get(
-            "flt_floor_to",
-            int(np.nanmax(df["floor"])) if "floor" in df and df["floor"].notna().any() else 100,
-        ),
-        step=1, key="flt_floor_to", label_visibility="collapsed",
+        value=default_floor_to,
+        step=1, key=f"flt_floor_to_{v}", label_visibility="collapsed",
     )
     st.caption("от / до")
 
+    # ------- МЕТРО -------
     st.markdown("**До метро, мин**")
     if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any():
-        m_max_real = METRO_MAX_REAL
         col_m1, col_m2 = st.columns(2)
         metro_from = col_m1.number_input(
             "от  ", min_value=0,
-            value=st.session_state.get("flt_metro_from", 0),
-            step=1, key="flt_metro_from", label_visibility="collapsed",
+            value=0,
+            step=1, key=f"flt_metro_from_{v}", label_visibility="collapsed",
         )
         metro_to = col_m2.number_input(
             "до  ", min_value=0,
-            value=st.session_state.get("flt_metro_to", m_max_real),
-            step=1, key="flt_metro_to", label_visibility="collapsed",
+            value=default_metro_to,
+            step=1, key=f"flt_metro_to_{v}", label_visibility="collapsed",
         )
         st.caption("от / до")
         st.caption("⚠️ При сужении диапазона объекты без метро скрываются")
     else:
         metro_from, metro_to = 0, 999
 
+    # ------- КОМНАТЫ -------
     if "rooms" in df.columns:
         rooms_all = sorted(df["rooms"].dropna().unique().tolist())
         sel_rooms = st.multiselect(
             "Комнат", rooms_all,
-            default=st.session_state.get("flt_rooms", []),
-            key="flt_rooms",
+            default=[],
+            key=f"flt_rooms_{v}",
         )
     else:
         sel_rooms = []
 
+    # ------- ПЛОЩАДЬ -------
     area_from = st.number_input(
         "Площадь от, м²", min_value=0.0,
-        value=st.session_state.get("flt_area_from", 0.0),
-        step=1.0, key="flt_area_from",
+        value=0.0,
+        step=1.0, key=f"flt_area_from_{v}",
     )
 
+    # ------- ИПОТЕКА -------
     only_mortgage = st.checkbox(
         "Только со льготной ипотекой",
-        value=st.session_state.get("flt_mortgage", False),
-        key="flt_mortgage",
+        value=False,
+        key=f"flt_mortgage_{v}",
     )
 
 
-# ======================== FILTERING ========================
+# ======================== ФИЛЬТРАЦИЯ ========================
 f = df.copy()
 
 if sel_cities:
@@ -341,7 +424,7 @@ def render_card(row, key_prefix, full=False):
     with col_left:
         st.markdown(f"""
         <div class="zhk-card">
-            <div class="zhk-title">{row.get('complex_name', 'ЖК без названия')}</div>
+            <div class="zhk-title">{row.get('zhk_name', 'ЖК без названия')}</div>
             <div class="zhk-sub">{row.get('developer', '—')} · {row.get('city', '')} {row.get('district', '') or ''}</div>
             <div>
                 <span class="zhk-badge">{row.get('complex_class', 'класс не указан')}</span>
@@ -359,7 +442,6 @@ def render_card(row, key_prefix, full=False):
         </div>
         """, unsafe_allow_html=True)
 
-        # Кнопка перехода к полной карточке
         if not full:
             if st.button(
                 "📄 Открыть подробную карточку",
@@ -407,18 +489,14 @@ def render_card(row, key_prefix, full=False):
             st.rerun()
 
 
-# ======================== NAVIGATION ========================
+# ======================== НАВИГАЦИЯ ========================
 TAB_LABELS = ["🏠 Карточки", "🗺 Карта", "📄 Карточка", "❤ Избранное", "📊 Аналитика"]
 
-# Проверка, что активная вкладка валидна
 if st.session_state.active_tab not in TAB_LABELS:
     st.session_state.active_tab = "🏠 Карточки"
 
 active_index = TAB_LABELS.index(st.session_state.active_tab)
 
-# ВАЖНО: без key у radio, чтобы управлять значением через index.
-# Если пользователь кликнул вручную — вернётся новое значение,
-# и мы обновим active_tab.
 selected_tab = st.radio(
     "Навигация",
     TAB_LABELS,
@@ -495,7 +573,6 @@ elif active_tab == "🗺 Карта":
             "бизнес": "green", "элит": "red",
         }
 
-        # Округляем координаты для стабильного сопоставления
         geo = geo.copy()
         geo["lat_r"] = geo["lat"].round(6)
         geo["lon_r"] = geo["lon"].round(6)
@@ -505,7 +582,7 @@ elif active_tab == "🗺 Карта":
             color = colors.get(cls, "purple")
 
             popup_html = (
-                f"<b>{r.get('complex_name', '—')}</b><br>"
+                f"<b>{r.get('zhk_name', '—')}</b><br>"
                 f"{fmt_price(r)}<br>"
                 f"{fmt_metro(r)}<br>"
                 f"{r.get('rooms', '—')} комн · {r.get('total_area', '—')} м²"
@@ -518,7 +595,7 @@ elif active_tab == "🗺 Карта":
                 fill=True,
                 fill_opacity=0.9,
                 weight=2,
-                tooltip=r.get("complex_name", "ЖК"),
+                tooltip=r.get("zhk_name", "ЖК"),
                 popup=folium.Popup(popup_html, max_width=280),
             ).add_to(cluster)
 
@@ -530,7 +607,6 @@ elif active_tab == "🗺 Карта":
             returned_objects=["last_object_clicked"],
         )
 
-        # Обработка клика по маркеру
         if map_data and map_data.get("last_object_clicked"):
             clicked = map_data["last_object_clicked"]
             clat, clon = clicked.get("lat"), clicked.get("lng")
@@ -541,7 +617,6 @@ elif active_tab == "🗺 Карта":
                 ]
                 if len(match) > 0:
                     new_id = str(match.iloc[0]["id"])
-                    # Проверяем, не обрабатывали ли мы уже этот клик
                     click_signature = f"{new_id}_{clat}_{clon}"
                     if st.session_state.last_clicked_marker_id != click_signature:
                         st.session_state.last_clicked_marker_id = click_signature
@@ -564,7 +639,7 @@ elif active_tab == "📄 Карточка":
             st.warning("ЖК не найден. Возможно, фильтры его скрыли.")
         else:
             row = row_match.iloc[0]
-            st.markdown(f"## {row.get('complex_name', '—')}")
+            st.markdown(f"## {row.get('zhk_name', '—')}")
             render_card(row, key_prefix=f"full_{sel_id}", full=True)
             st.markdown("---")
             if st.button("← Вернуться к списку"):
