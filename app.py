@@ -76,7 +76,6 @@ st.markdown("""
     color: #b05a00;
 }
 
-/* Плашка "Фильтры применены" */
 .filters-applied {
     display: flex;
     align-items: center;
@@ -96,7 +95,6 @@ st.markdown("""
 }
 .filters-applied b { color: #0d7a3f; }
 
-/* Плашка "Сброшено" */
 .filters-reset {
     display: flex;
     align-items: center;
@@ -111,7 +109,6 @@ st.markdown("""
     animation: appliedPulse 1.2s ease-out;
 }
 
-/* Скрываем встроенную стрелку sidebar — фильтры в expander */
 @media (max-width: 768px) {
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"] {
@@ -133,6 +130,51 @@ _CORPUS_PATTERN = re.compile(
     r"\s*[№#]?\s*[\w\d\-–—/]*\s*[\)\]]?\s*$",
     re.IGNORECASE,
 )
+
+# Карта нормализации классов ЖК: приводим все варианты к единому виду
+_CLASS_NORMALIZE = {
+    # эконом
+    "эконом": "Эконом",
+    "economy": "Эконом",
+    "эконом-класс": "Эконом",
+    "эконом класс": "Эконом",
+    # комфорт
+    "комфорт": "Комфорт",
+    "comfort": "Комфорт",
+    "комфорт-класс": "Комфорт",
+    "комфорт класс": "Комфорт",
+    "комфорт+": "Комфорт+",
+    "комфорт +": "Комфорт+",
+    "comfort+": "Комфорт+",
+    # бизнес
+    "бизнес": "Бизнес",
+    "business": "Бизнес",
+    "бизнес-класс": "Бизнес",
+    "бизнес класс": "Бизнес",
+    # премиум
+    "премиум": "Премиум",
+    "premium": "Премиум",
+    "премиум-класс": "Премиум",
+    # элит
+    "элит": "Элит",
+    "элитный": "Элит",
+    "elite": "Элит",
+    "элит-класс": "Элит",
+    # de luxe
+    "de luxe": "De Luxe",
+    "deluxe": "De Luxe",
+    "де люкс": "De Luxe",
+}
+
+
+def _normalize_class(val) -> str:
+    """Приводит значение класса ЖК к единому виду. Пустые → 'Не указан'."""
+    if not isinstance(val, str):
+        return "Не указан"
+    key = val.strip().lower()
+    if not key or key in ("nan", "none", "нет данных", "не указан"):
+        return "Не указан"
+    return _CLASS_NORMALIZE.get(key, val.strip().capitalize())
 
 
 def _strip_corpus(name: str) -> str:
@@ -203,6 +245,12 @@ def load():
         df["id"] = df.index.astype(str)
     df["id"] = df["id"].astype(str)
 
+    # Нормализация класса ЖК — убирает дубли типа "бизнес"/"business"
+    if "complex_class" in df.columns:
+        df["complex_class"] = df["complex_class"].apply(_normalize_class)
+    else:
+        df["complex_class"] = "Не указан"
+
     df["zhk_name"] = df.apply(_extract_zhk_name, axis=1)
 
     return df
@@ -229,7 +277,6 @@ if "last_clicked_marker_id" not in st.session_state:
     st.session_state.last_clicked_marker_id = None
 if "filters_version" not in st.session_state:
     st.session_state.filters_version = 0
-# Хэш предыдущего состояния фильтров + флаг сброса
 if "prev_filters_hash" not in st.session_state:
     st.session_state.prev_filters_hash = None
 if "filters_just_reset" not in st.session_state:
@@ -242,9 +289,7 @@ def reset_filters():
             del st.session_state[k]
     st.session_state.filters_version += 1
     st.session_state.card_page = 1
-    # Флаг для отображения плашки «Фильтры сброшены»
     st.session_state.filters_just_reset = True
-    # Сбрасываем сохранённый хэш, чтобы плашка «применены» не путалась
     st.session_state.prev_filters_hash = None
 
 
@@ -336,6 +381,7 @@ def render_filters():
         sel_devs = []
 
     if "complex_class" in df.columns:
+        # Список классов уже нормализован, поэтому дублей нет
         classes = sorted(df["complex_class"].dropna().unique().tolist())
         sel_classes = st.multiselect("Класс ЖК", classes, default=[], key=f"flt_classes_{v}")
     else:
@@ -432,8 +478,6 @@ only_mortgage = filters["only_mortgage"]
 
 
 # ======================== ХЭШ СОСТОЯНИЯ ФИЛЬТРОВ ========================
-# Формируем строку из всех значений фильтров и хэшируем.
-# Если хэш изменился — фильтры были пересчитаны.
 filters_signature = "|".join([
     ",".join(map(str, sorted(sel_cities))),
     ",".join(map(str, sorted(sel_sources))),
@@ -453,16 +497,14 @@ filters_changed = (
 )
 filters_reset_just_now = st.session_state.filters_just_reset
 
-# Обновляем сохранённый хэш и сбрасываем флаг
 st.session_state.prev_filters_hash = current_hash
 st.session_state.filters_just_reset = False
 
 
 # ======================== ФИЛЬТРАЦИЯ ========================
-# Спиннер показывается, только если фильтры поменялись — визуальная обратная связь
 if filters_changed or filters_reset_just_now:
     with st.spinner("Применяем фильтры…"):
-        time.sleep(0.25)  # короткая пауза, чтобы спиннер успел появиться
+        time.sleep(0.25)
 
 f = df.copy()
 
@@ -678,10 +720,16 @@ elif active_tab == "🗺 Карта":
         m = folium.Map(location=center, zoom_start=10, tiles="OpenStreetMap")
         cluster = MarkerCluster().add_to(m)
 
+        # Цвета приведены в соответствие с нормализованными названиями классов
         colors = {
-            "business": "green", "comfort": "blue", "elite": "red",
-            "эконом": "gray", "комфорт": "blue",
-            "бизнес": "green", "элит": "red",
+            "эконом": "gray",
+            "комфорт": "blue",
+            "комфорт+": "cadetblue",
+            "бизнес": "green",
+            "премиум": "orange",
+            "элит": "red",
+            "de luxe": "darkred",
+            "не указан": "purple",
         }
 
         geo = geo.copy()
@@ -782,32 +830,4 @@ elif active_tab == "📊 Аналитика":
     if len(f) == 0:
         st.warning("Нет данных для аналитики")
     else:
-        if "price_mln" in f.columns and f["price_mln"].notna().any():
-            st.subheader("Распределение цен, млн ₽")
-            st.plotly_chart(
-                px.histogram(f.dropna(subset=["price_mln"]), x="price_mln", nbins=30),
-                use_container_width=True,
-            )
-
-        if "complex_class" in f.columns and "price_per_sqm" in f.columns and f["price_per_sqm"].notna().any():
-            box_df = f.dropna(subset=["price_per_sqm", "complex_class"])
-            if len(box_df) > 0:
-                st.subheader("Цена за м² по классу")
-                st.plotly_chart(
-                    px.box(box_df, x="complex_class", y="price_per_sqm"),
-                    use_container_width=True,
-                )
-
-        if "city" in f.columns and "price_per_sqm" in f.columns:
-            grp = (
-                f.dropna(subset=["city", "price_per_sqm"])
-                .groupby("city")["price_per_sqm"]
-                .mean()
-                .sort_values(ascending=False)
-                .head(15)
-            )
-            if len(grp) > 0:
-                st.subheader("Средняя цена за м² по городам")
-                st.bar_chart(grp)
-
-        if "developer" in f.columns and f["
+        if "price_mln" in f.columns and f["price_mln"].notna().
