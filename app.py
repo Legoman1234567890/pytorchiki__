@@ -22,10 +22,17 @@ st.markdown("""
     margin-bottom: 16px;
     background: #ffffff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+    transition: box-shadow 0.15s ease, border-color 0.15s ease;
 }
-.zhk-card:hover {
+.zhk-card-link {
+    text-decoration: none !important;
+    color: inherit !important;
+    display: block;
+}
+.zhk-card-link:hover .zhk-card {
     box-shadow: 0 4px 12px rgba(0,0,0,0.08);
     border-color: #cfd8ff;
+    cursor: pointer;
 }
 .zhk-title {
     font-size: 22px;
@@ -67,7 +74,6 @@ st.markdown("""
 
 # ======================== ЗАГРУЗКА ДАННЫХ ========================
 
-# Регулярка для отсечения "хвостов" типа "Корпус 1", "Корп. 2", "Литер А", "Секция 3"
 _CORPUS_PATTERN = re.compile(
     r"\s*[\(\[\-–—,:]?\s*"
     r"(корпус|корп\.?|литер|секц(ия|\.)?|блок|строение|стр\.?|этап|очередь)"
@@ -151,7 +157,6 @@ def load():
         df["id"] = df.index.astype(str)
     df["id"] = df["id"].astype(str)
 
-    # Нормализация названия ЖК
     df["zhk_name"] = df.apply(_extract_zhk_name, axis=1)
 
     return df
@@ -181,7 +186,6 @@ if "filters_version" not in st.session_state:
 
 
 def reset_filters():
-    """Сбрасывает все фильтры через смену версии ключей виджетов."""
     for k in list(st.session_state.keys()):
         if k.startswith("flt_"):
             del st.session_state[k]
@@ -194,12 +198,6 @@ def toggle_fav(zhk_id):
         st.session_state.favorites.remove(zhk_id)
     else:
         st.session_state.favorites.add(zhk_id)
-
-
-def open_card(zhk_id):
-    """Открыть карточку и переключиться на вкладку '📄 Карточка'."""
-    st.session_state.selected_zhk = zhk_id
-    st.session_state.active_tab = "📄 Карточка"
 
 
 def fmt_price(row):
@@ -229,8 +227,18 @@ METRO_MAX_REAL = (
 )
 
 
+# ======================== ОБРАБОТКА КЛИКА ПО КАРТОЧКЕ ========================
+# Если пользователь кликнул по карточке, ссылка меняет URL на ?zhk_id=...
+# Ловим это здесь и переключаем вкладку на «📄 Карточка».
+# ВАЖНО: этот блок должен идти до рендера навигации.
+qp_zhk = st.query_params.get("zhk_id")
+if qp_zhk:
+    st.query_params.clear()
+    st.session_state.selected_zhk = str(qp_zhk)
+    st.session_state.active_tab = "📄 Карточка"
+
+
 # ======================== ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ ========================
-# Пересчитываются при каждой смене filters_version
 v = st.session_state.filters_version
 
 default_sources = (
@@ -422,7 +430,7 @@ def render_card(row, key_prefix, full=False):
     col_left, col_right = st.columns([6, 1])
 
     with col_left:
-        st.markdown(f"""
+        card_html = f"""
         <div class="zhk-card">
             <div class="zhk-title">{row.get('zhk_name', 'ЖК без названия')}</div>
             <div class="zhk-sub">{row.get('developer', '—')} · {row.get('city', '')} {row.get('district', '') or ''}</div>
@@ -440,16 +448,19 @@ def render_card(row, key_prefix, full=False):
                 Источник: {row.get('source', '—')}
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
 
         if not full:
-            if st.button(
-                "📄 Открыть подробную карточку",
-                key=f"{key_prefix}_openbtn_{zhk_id}",
-                use_container_width=True,
-            ):
-                open_card(zhk_id)
-                st.rerun()
+            # Клик по карточке открывает полную карточку через URL-параметр
+            st.markdown(
+                f'<a href="?zhk_id={zhk_id}" target="_self" class="zhk-card-link">{card_html}</a>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(card_html, unsafe_allow_html=True)
+
+        if pd.notna(row.get("url")):
+            st.markdown(f"[🔗 Открыть на {row.get('source', 'сайте')}]({row['url']})")
 
         if full:
             fields = [
@@ -475,12 +486,6 @@ def render_card(row, key_prefix, full=False):
             cols = st.columns(3)
             for i, (label, val) in enumerate(fields):
                 cols[i % 3].markdown(f"**{label}:** {val if pd.notna(val) else '—'}")
-
-            if pd.notna(row.get("url")):
-                st.markdown(f"🔗 [Открыть на {row.get('source', 'сайте')}]({row['url']})")
-        else:
-            if pd.notna(row.get("url")):
-                st.markdown(f"[🔗 Открыть на {row.get('source', 'сайте')}]({row['url']})")
 
     with col_right:
         label = "💔 Убрать" if is_fav else "❤ В избранное"
@@ -514,6 +519,7 @@ active_tab = st.session_state.active_tab
 # ======================== TAB: КАРТОЧКИ ========================
 if active_tab == "🏠 Карточки":
     st.markdown(f"### Найдено: **{len(f)}** из {len(df)} ЖК")
+    st.caption("💡 Кликни по карточке, чтобы открыть подробную информацию")
 
     if len(f) == 0:
         st.info("Нет объектов под текущие фильтры. Попробуй сбросить фильтры.")
@@ -630,7 +636,7 @@ elif active_tab == "📄 Карточка":
     sel_id = st.session_state.selected_zhk
     if not sel_id:
         st.info(
-            "Кликни по маркеру на карте или нажми «📄 Открыть подробную карточку» в списке — "
+            "Кликни по карточке в списке или по маркеру на карте — "
             "здесь появится подробная информация о ЖК."
         )
     else:
@@ -656,6 +662,7 @@ elif active_tab == "❤ Избранное":
     else:
         fav_df = df[df["id"].astype(str).isin(fav_ids)]
         st.markdown(f"### В избранном: **{len(fav_df)}** ЖК")
+        st.caption("💡 Кликни по карточке, чтобы открыть подробную информацию")
 
         if st.button("🗑 Очистить избранное"):
             st.session_state.favorites = set()
