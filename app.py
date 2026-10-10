@@ -69,47 +69,16 @@ st.markdown("""
     color: #b05a00;
 }
 
-/* ==== Мобильная кнопка разворота sidebar ==== */
+/* Скрываем встроенную стрелку sidebar на мобильных —
+   фильтры открываются через expander */
 @media (max-width: 768px) {
-    /* Современные версии Streamlit (1.30+) */
-    [data-testid="stSidebarCollapsedControl"] {
-        width: auto !important;
-        height: auto !important;
-        padding: 8px 14px !important;
-        border-radius: 8px !important;
-        background: #ffffff !important;
-        border: 1px solid #e6e6e6 !important;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
-        display: flex !important;
-        align-items: center !important;
-    }
-    [data-testid="stSidebarCollapsedControl"]::after {
-        content: "Показать фильтры";
-        font-size: 14px;
-        font-weight: 600;
-        color: #1a1a1a;
-        white-space: nowrap;
-        margin-left: 6px;
-    }
-
-    /* Старые версии Streamlit — фолбэк */
+    [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"] {
-        width: auto !important;
-        height: auto !important;
-        padding: 8px 14px !important;
-        border-radius: 8px !important;
-        background: #ffffff !important;
-        border: 1px solid #e6e6e6 !important;
-        display: flex !important;
-        align-items: center !important;
+        display: none !important;
     }
-    [data-testid="collapsedControl"]::after {
-        content: "Показать фильтры";
-        font-size: 14px;
-        font-weight: 600;
-        color: #1a1a1a;
-        white-space: nowrap;
-        margin-left: 6px;
+    /* Скрываем сам sidebar, если он как-то открылся */
+    section[data-testid="stSidebar"] {
+        display: none !important;
     }
 }
 </style>
@@ -127,7 +96,6 @@ _CORPUS_PATTERN = re.compile(
 
 
 def _strip_corpus(name: str) -> str:
-    """Убирает из названия хвосты вида 'Корпус 1', 'Литер А', 'Секция 3' и т.п."""
     if not isinstance(name, str):
         return ""
     s = name.strip()
@@ -140,12 +108,6 @@ def _strip_corpus(name: str) -> str:
 
 
 def _extract_zhk_name(row) -> str:
-    """
-    Возвращает название ЖК:
-    1. Если есть отдельная колонка с полным названием — берём её.
-    2. Иначе чистим complex_name от 'Корпус N'.
-    3. Если после чистки пусто — фолбэк на застройщика+город.
-    """
     for col in ("zhk_name", "residential_complex", "project_name", "jk_name", "complex_full_name"):
         val = row.get(col)
         if isinstance(val, str) and val.strip() and val.strip().lower() not in ("nan", "none"):
@@ -297,10 +259,17 @@ default_floor_to = (
 default_metro_to = METRO_MAX_REAL
 
 
-# ======================== SIDEBAR ========================
-with st.sidebar:
-    st.header("🔍 Фильтры")
-    st.button("♻️ Сбросить фильтры", on_click=reset_filters, use_container_width=True)
+# ======================== ФИЛЬТРЫ (ВЫНЕСЕНЫ В ФУНКЦИЮ) ========================
+def render_filters():
+    """Отрисовывает все фильтры. Используется и в sidebar (desktop),
+    и в expander (mobile)."""
+
+    st.button(
+        "♻️ Сбросить фильтры",
+        on_click=reset_filters,
+        use_container_width=True,
+        key=f"reset_btn_{v}",
+    )
 
     # ------- ГОРОД -------
     if "city" in df.columns:
@@ -419,6 +388,55 @@ with st.sidebar:
         value=False,
         key=f"flt_mortgage_{v}",
     )
+
+    return {
+        "sel_cities": sel_cities,
+        "sel_sources": sel_sources,
+        "sel_devs": sel_devs,
+        "sel_classes": sel_classes,
+        "sel_rooms": sel_rooms,
+        "price_from": price_from,
+        "price_to": price_to,
+        "floor_from": floor_from,
+        "floor_to": floor_to,
+        "metro_from": metro_from,
+        "metro_to": metro_to,
+        "area_from": area_from,
+        "only_mortgage": only_mortgage,
+    }
+
+
+# ======================== РЕНДЕР ФИЛЬТРОВ ========================
+# На десктопе используем sidebar, на мобильных — expander в основном потоке.
+# Streamlit не даёт надёжно определить устройство, поэтому рендерим ОБА варианта,
+# но один из них скрываем через CSS (см. выше: на мобильных sidebar скрыт).
+#
+# Однако у нас проблема: если рендерить фильтры дважды, ключи виджетов конфликтуют.
+# Решение: всегда рендерим только в sidebar, а на мобильных sidebar скрываем,
+# НО добавляем в основной поток expander, который содержит ДУБЛЬ фильтров с другими ключами.
+#
+# Чтобы не дублировать логику, используем "зеркальные" фильтры через session_state.
+
+# ---- ПРОСТОЕ РЕШЕНИЕ: всегда используем expander в основном потоке ----
+# Sidebar больше не используется для фильтров.
+# На десктопе expander выглядит как обычная панель, которую можно свернуть.
+
+with st.expander("🔍 Показать фильтры", expanded=False):
+    filters = render_filters()
+
+sel_cities = filters["sel_cities"]
+sel_sources = filters["sel_sources"]
+sel_devs = filters["sel_devs"]
+sel_classes = filters["sel_classes"]
+sel_rooms = filters["sel_rooms"]
+price_from = filters["price_from"]
+price_to = filters["price_to"]
+floor_from = filters["floor_from"]
+floor_to = filters["floor_to"]
+metro_from = filters["metro_from"]
+metro_to = filters["metro_to"]
+area_from = filters["area_from"]
+only_mortgage = filters["only_mortgage"]
 
 
 # ======================== ФИЛЬТРАЦИЯ ========================
