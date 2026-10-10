@@ -68,6 +68,50 @@ st.markdown("""
     background: #fff4e5;
     color: #b05a00;
 }
+
+/* ==== Мобильная кнопка разворота sidebar ==== */
+@media (max-width: 768px) {
+    /* Современные версии Streamlit (1.30+) */
+    [data-testid="stSidebarCollapsedControl"] {
+        width: auto !important;
+        height: auto !important;
+        padding: 8px 14px !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+        border: 1px solid #e6e6e6 !important;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+    [data-testid="stSidebarCollapsedControl"]::after {
+        content: "Показать фильтры";
+        font-size: 14px;
+        font-weight: 600;
+        color: #1a1a1a;
+        white-space: nowrap;
+        margin-left: 6px;
+    }
+
+    /* Старые версии Streamlit — фолбэк */
+    [data-testid="collapsedControl"] {
+        width: auto !important;
+        height: auto !important;
+        padding: 8px 14px !important;
+        border-radius: 8px !important;
+        background: #ffffff !important;
+        border: 1px solid #e6e6e6 !important;
+        display: flex !important;
+        align-items: center !important;
+    }
+    [data-testid="collapsedControl"]::after {
+        content: "Показать фильтры";
+        font-size: 14px;
+        font-weight: 600;
+        color: #1a1a1a;
+        white-space: nowrap;
+        margin-left: 6px;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -228,9 +272,6 @@ METRO_MAX_REAL = (
 
 
 # ======================== ОБРАБОТКА КЛИКА ПО КАРТОЧКЕ ========================
-# Если пользователь кликнул по карточке, ссылка меняет URL на ?zhk_id=...
-# Ловим это здесь и переключаем вкладку на «📄 Карточка».
-# ВАЖНО: этот блок должен идти до рендера навигации.
 qp_zhk = st.query_params.get("zhk_id")
 if qp_zhk:
     st.query_params.clear()
@@ -451,7 +492,6 @@ def render_card(row, key_prefix, full=False):
         """
 
         if not full:
-            # Клик по карточке открывает полную карточку через URL-параметр
             st.markdown(
                 f'<a href="?zhk_id={zhk_id}" target="_self" class="zhk-card-link">{card_html}</a>',
                 unsafe_allow_html=True,
