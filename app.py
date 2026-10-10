@@ -21,7 +21,6 @@ st.markdown("""
     margin-bottom: 16px;
     background: #ffffff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-    cursor: pointer;
 }
 .zhk-card:hover {
     box-shadow: 0 4px 12px rgba(0,0,0,0.08);
@@ -109,17 +108,17 @@ if df.empty:
     st.error("Файл production_data_merged.csv пуст или не найден.")
     st.stop()
 
-# --- session state ---
+# ---------- session state ----------
 if "favorites" not in st.session_state:
     st.session_state.favorites = set()
 if "selected_zhk" not in st.session_state:
     st.session_state.selected_zhk = None
 if "card_page" not in st.session_state:
     st.session_state.card_page = 1
-# Вкладка, которую нужно активировать при следующем рендере
 if "active_tab" not in st.session_state:
     st.session_state.active_tab = "🏠 Карточки"
-# Метка для переключения (используется как key у st.tabs через radio-эмуляцию)
+if "last_clicked_marker_id" not in st.session_state:
+    st.session_state.last_clicked_marker_id = None
 
 
 def toggle_fav(zhk_id):
@@ -129,10 +128,10 @@ def toggle_fav(zhk_id):
         st.session_state.favorites.add(zhk_id)
 
 
-def open_card(zhk_id, switch_tab=True):
+def open_card(zhk_id):
+    """Открыть карточку и переключиться на вкладку '📄 Карточка'."""
     st.session_state.selected_zhk = zhk_id
-    if switch_tab:
-        st.session_state.active_tab = "📄 Карточка"
+    st.session_state.active_tab = "📄 Карточка"
 
 
 def reset_filters():
@@ -169,6 +168,7 @@ METRO_MAX_REAL = (
 )
 
 
+# ======================== SIDEBAR ========================
 with st.sidebar:
     st.header("🔍 Фильтры")
     st.button("♻️ Сбросить фильтры", on_click=reset_filters, use_container_width=True)
@@ -289,6 +289,7 @@ with st.sidebar:
     )
 
 
+# ======================== FILTERING ========================
 f = df.copy()
 
 if sel_cities:
@@ -330,7 +331,8 @@ if only_mortgage and "mortgage_allowed" in f.columns:
 f = f.reset_index(drop=True)
 
 
-def render_card(row, key_prefix, full=False, show_open_button=True):
+# ======================== RENDER CARD ========================
+def render_card(row, key_prefix, full=False):
     zhk_id = str(row["id"])
     is_fav = zhk_id in st.session_state.favorites
 
@@ -357,14 +359,14 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
         </div>
         """, unsafe_allow_html=True)
 
-        # Кнопка "Открыть карточку" поверх карточки — на весь блок по ширине
+        # Кнопка перехода к полной карточке
         if not full:
             if st.button(
                 "📄 Открыть подробную карточку",
                 key=f"{key_prefix}_openbtn_{zhk_id}",
                 use_container_width=True,
             ):
-                open_card(zhk_id, switch_tab=True)
+                open_card(zhk_id)
                 st.rerun()
 
         if full:
@@ -405,47 +407,33 @@ def render_card(row, key_prefix, full=False, show_open_button=True):
             st.rerun()
 
 
-# --- Кастомные табы с управлением из session_state ---
-TABS = [
-    "🏠 Карточки",
-    "🗺 Карта",
-    "📄 Карточка",
-    f"❤ Избранное ({len(st.session_state.favorites)})",
-    "📊 Аналитика",
-]
+# ======================== NAVIGATION ========================
+TAB_LABELS = ["🏠 Карточки", "🗺 Карта", "📄 Карточка", "❤ Избранное", "📊 Аналитика"]
 
-# Текущий активный таб (с защитой от изменения списка вкладок)
-if st.session_state.active_tab not in TABS:
-    # Если вкладка избранного изменила название (число), оставляем Карточки
-    if st.session_state.active_tab.startswith("❤ Избранное"):
-        st.session_state.active_tab = "❤ Избранное"
-    else:
-        st.session_state.active_tab = "🏠 Карточки"
+# Проверка, что активная вкладка валидна
+if st.session_state.active_tab not in TAB_LABELS:
+    st.session_state.active_tab = "🏠 Карточки"
 
-# Радио-переключатель, стилизованный под табы
-tab_labels = ["🏠 Карточки", "🗺 Карта", "📄 Карточка", "❤ Избранное", "📊 Аналитика"]
-active_index = tab_labels.index(
-    st.session_state.active_tab if st.session_state.active_tab in tab_labels else "🏠 Карточки"
-)
+active_index = TAB_LABELS.index(st.session_state.active_tab)
 
+# ВАЖНО: без key у radio, чтобы управлять значением через index.
+# Если пользователь кликнул вручную — вернётся новое значение,
+# и мы обновим active_tab.
 selected_tab = st.radio(
     "Навигация",
-    tab_labels,
+    TAB_LABELS,
     index=active_index,
     horizontal=True,
     label_visibility="collapsed",
-    key="nav_radio",
 )
 
-# Синхронизация: если пользователь кликнул вручную — обновляем session_state
 if selected_tab != st.session_state.active_tab:
     st.session_state.active_tab = selected_tab
 
 active_tab = st.session_state.active_tab
 
 
-# ======================== Содержимое вкладок ========================
-
+# ======================== TAB: КАРТОЧКИ ========================
 if active_tab == "🏠 Карточки":
     st.markdown(f"### Найдено: **{len(f)}** из {len(df)} ЖК")
 
@@ -489,6 +477,7 @@ if active_tab == "🏠 Карточки":
             )
 
 
+# ======================== TAB: КАРТА ========================
 elif active_tab == "🗺 Карта":
     geo = f.dropna(subset=["lat", "lon"]) if "lat" in f.columns else pd.DataFrame()
     if len(geo) == 0:
@@ -505,6 +494,11 @@ elif active_tab == "🗺 Карта":
             "эконом": "gray", "комфорт": "blue",
             "бизнес": "green", "элит": "red",
         }
+
+        # Округляем координаты для стабильного сопоставления
+        geo = geo.copy()
+        geo["lat_r"] = geo["lat"].round(6)
+        geo["lon_r"] = geo["lon"].round(6)
 
         for _, r in geo.iterrows():
             cls = str(r.get("complex_class", "")).lower()
@@ -536,23 +530,27 @@ elif active_tab == "🗺 Карта":
             returned_objects=["last_object_clicked"],
         )
 
+        # Обработка клика по маркеру
         if map_data and map_data.get("last_object_clicked"):
             clicked = map_data["last_object_clicked"]
             clat, clon = clicked.get("lat"), clicked.get("lng")
             if clat is not None and clon is not None:
                 match = geo[
-                    (geo["lat"].round(6) == round(clat, 6)) &
-                    (geo["lon"].round(6) == round(clon, 6))
+                    (geo["lat_r"] == round(clat, 6)) &
+                    (geo["lon_r"] == round(clon, 6))
                 ]
                 if len(match) > 0:
                     new_id = str(match.iloc[0]["id"])
-                    if st.session_state.selected_zhk != new_id:
-                        # Открываем карточку и переключаем вкладку
+                    # Проверяем, не обрабатывали ли мы уже этот клик
+                    click_signature = f"{new_id}_{clat}_{clon}"
+                    if st.session_state.last_clicked_marker_id != click_signature:
+                        st.session_state.last_clicked_marker_id = click_signature
                         st.session_state.selected_zhk = new_id
                         st.session_state.active_tab = "📄 Карточка"
                         st.rerun()
 
 
+# ======================== TAB: КАРТОЧКА ========================
 elif active_tab == "📄 Карточка":
     sel_id = st.session_state.selected_zhk
     if not sel_id:
@@ -567,7 +565,7 @@ elif active_tab == "📄 Карточка":
         else:
             row = row_match.iloc[0]
             st.markdown(f"## {row.get('complex_name', '—')}")
-            render_card(row, key_prefix=f"full_{sel_id}", full=True, show_open_button=False)
+            render_card(row, key_prefix=f"full_{sel_id}", full=True)
             st.markdown("---")
             if st.button("← Вернуться к списку"):
                 st.session_state.selected_zhk = None
@@ -575,6 +573,7 @@ elif active_tab == "📄 Карточка":
                 st.rerun()
 
 
+# ======================== TAB: ИЗБРАННОЕ ========================
 elif active_tab == "❤ Избранное":
     fav_ids = st.session_state.favorites
     if not fav_ids:
@@ -591,6 +590,7 @@ elif active_tab == "❤ Избранное":
             render_card(row, key_prefix=f"fav_{idx}")
 
 
+# ======================== TAB: АНАЛИТИКА ========================
 elif active_tab == "📊 Аналитика":
     if len(f) == 0:
         st.warning("Нет данных для аналитики")
