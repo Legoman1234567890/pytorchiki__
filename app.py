@@ -1,4 +1,6 @@
 import re
+import time
+import hashlib
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -23,6 +25,11 @@ st.markdown("""
     background: #ffffff;
     box-shadow: 0 1px 3px rgba(0,0,0,0.04);
     transition: box-shadow 0.15s ease, border-color 0.15s ease;
+    animation: zhkFadeIn 0.35s ease-out both;
+}
+@keyframes zhkFadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to   { opacity: 1; transform: translateY(0); }
 }
 .zhk-card-link {
     text-decoration: none !important;
@@ -69,14 +76,47 @@ st.markdown("""
     color: #b05a00;
 }
 
-/* Скрываем встроенную стрелку sidebar на мобильных —
-   фильтры открываются через expander */
+/* Плашка "Фильтры применены" */
+.filters-applied {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    margin: 8px 0 16px 0;
+    border-radius: 10px;
+    background: linear-gradient(90deg, #e7f6ec 0%, #eef3ff 100%);
+    border-left: 4px solid #0d7a3f;
+    color: #1a1a1a;
+    font-size: 15px;
+    animation: appliedPulse 1.2s ease-out;
+}
+@keyframes appliedPulse {
+    0%   { background-color: #c7f0d5; transform: scale(1.01); }
+    100% { background-color: transparent; transform: scale(1); }
+}
+.filters-applied b { color: #0d7a3f; }
+
+/* Плашка "Сброшено" */
+.filters-reset {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    margin: 8px 0 16px 0;
+    border-radius: 10px;
+    background: linear-gradient(90deg, #fff4e5 0%, #ffe9d6 100%);
+    border-left: 4px solid #b05a00;
+    color: #1a1a1a;
+    font-size: 15px;
+    animation: appliedPulse 1.2s ease-out;
+}
+
+/* Скрываем встроенную стрелку sidebar — фильтры в expander */
 @media (max-width: 768px) {
     [data-testid="stSidebarCollapsedControl"],
     [data-testid="collapsedControl"] {
         display: none !important;
     }
-    /* Скрываем сам sidebar, если он как-то открылся */
     section[data-testid="stSidebar"] {
         display: none !important;
     }
@@ -189,6 +229,11 @@ if "last_clicked_marker_id" not in st.session_state:
     st.session_state.last_clicked_marker_id = None
 if "filters_version" not in st.session_state:
     st.session_state.filters_version = 0
+# Хэш предыдущего состояния фильтров + флаг сброса
+if "prev_filters_hash" not in st.session_state:
+    st.session_state.prev_filters_hash = None
+if "filters_just_reset" not in st.session_state:
+    st.session_state.filters_just_reset = False
 
 
 def reset_filters():
@@ -197,6 +242,10 @@ def reset_filters():
             del st.session_state[k]
     st.session_state.filters_version += 1
     st.session_state.card_page = 1
+    # Флаг для отображения плашки «Фильтры сброшены»
+    st.session_state.filters_just_reset = True
+    # Сбрасываем сохранённый хэш, чтобы плашка «применены» не путалась
+    st.session_state.prev_filters_hash = None
 
 
 def toggle_fav(zhk_id):
@@ -259,11 +308,8 @@ default_floor_to = (
 default_metro_to = METRO_MAX_REAL
 
 
-# ======================== ФИЛЬТРЫ (ВЫНЕСЕНЫ В ФУНКЦИЮ) ========================
+# ======================== ФИЛЬТРЫ ========================
 def render_filters():
-    """Отрисовывает все фильтры. Используется и в sidebar (desktop),
-    и в expander (mobile)."""
-
     st.button(
         "♻️ Сбросить фильтры",
         on_click=reset_filters,
@@ -271,122 +317,83 @@ def render_filters():
         key=f"reset_btn_{v}",
     )
 
-    # ------- ГОРОД -------
     if "city" in df.columns:
         cities = sorted(df["city"].dropna().unique().tolist())
-        sel_cities = st.multiselect(
-            "Город", cities,
-            default=[],
-            key=f"flt_cities_{v}",
-        )
+        sel_cities = st.multiselect("Город", cities, default=[], key=f"flt_cities_{v}")
     else:
         sel_cities = []
 
-    # ------- ИСТОЧНИК -------
     if "source" in df.columns:
         sources = sorted(df["source"].dropna().unique().tolist())
-        sel_sources = st.multiselect(
-            "Источник данных", sources,
-            default=default_sources,
-            key=f"flt_sources_{v}",
-        )
+        sel_sources = st.multiselect("Источник данных", sources, default=default_sources, key=f"flt_sources_{v}")
     else:
         sel_sources = []
 
-    # ------- ЗАСТРОЙЩИК -------
     if "developer" in df.columns:
         developers = sorted(df["developer"].dropna().unique().tolist())
-        sel_devs = st.multiselect(
-            "Застройщик", developers,
-            default=[],
-            key=f"flt_devs_{v}",
-        )
+        sel_devs = st.multiselect("Застройщик", developers, default=[], key=f"flt_devs_{v}")
     else:
         sel_devs = []
 
-    # ------- КЛАСС -------
     if "complex_class" in df.columns:
         classes = sorted(df["complex_class"].dropna().unique().tolist())
-        sel_classes = st.multiselect(
-            "Класс ЖК", classes,
-            default=[],
-            key=f"flt_classes_{v}",
-        )
+        sel_classes = st.multiselect("Класс ЖК", classes, default=[], key=f"flt_classes_{v}")
     else:
         sel_classes = []
 
-    # ------- ЦЕНА -------
     st.markdown("**Цена, млн ₽**")
     col_p1, col_p2 = st.columns(2)
     price_from = col_p1.number_input(
-        "от", min_value=0.0,
-        value=0.0,
-        step=0.5, key=f"flt_price_from_{v}", label_visibility="collapsed",
+        "от", min_value=0.0, value=0.0, step=0.5,
+        key=f"flt_price_from_{v}", label_visibility="collapsed",
     )
     price_to = col_p2.number_input(
-        "до", min_value=0.0,
-        value=default_price_to,
-        step=0.5, key=f"flt_price_to_{v}", label_visibility="collapsed",
+        "до", min_value=0.0, value=default_price_to, step=0.5,
+        key=f"flt_price_to_{v}", label_visibility="collapsed",
     )
     st.caption("от / до")
 
-    # ------- ЭТАЖ -------
     st.markdown("**Этаж**")
     col_f1, col_f2 = st.columns(2)
     floor_from = col_f1.number_input(
-        "от ", min_value=0,
-        value=0,
-        step=1, key=f"flt_floor_from_{v}", label_visibility="collapsed",
+        "от ", min_value=0, value=0, step=1,
+        key=f"flt_floor_from_{v}", label_visibility="collapsed",
     )
     floor_to = col_f2.number_input(
-        "до ", min_value=0,
-        value=default_floor_to,
-        step=1, key=f"flt_floor_to_{v}", label_visibility="collapsed",
+        "до ", min_value=0, value=default_floor_to, step=1,
+        key=f"flt_floor_to_{v}", label_visibility="collapsed",
     )
     st.caption("от / до")
 
-    # ------- МЕТРО -------
     st.markdown("**До метро, мин**")
     if "metro_distance_min" in df.columns and df["metro_distance_min"].notna().any():
         col_m1, col_m2 = st.columns(2)
         metro_from = col_m1.number_input(
-            "от  ", min_value=0,
-            value=0,
-            step=1, key=f"flt_metro_from_{v}", label_visibility="collapsed",
+            "от  ", min_value=0, value=0, step=1,
+            key=f"flt_metro_from_{v}", label_visibility="collapsed",
         )
         metro_to = col_m2.number_input(
-            "до  ", min_value=0,
-            value=default_metro_to,
-            step=1, key=f"flt_metro_to_{v}", label_visibility="collapsed",
+            "до  ", min_value=0, value=default_metro_to, step=1,
+            key=f"flt_metro_to_{v}", label_visibility="collapsed",
         )
         st.caption("от / до")
         st.caption("⚠️ При сужении диапазона объекты без метро скрываются")
     else:
         metro_from, metro_to = 0, 999
 
-    # ------- КОМНАТЫ -------
     if "rooms" in df.columns:
         rooms_all = sorted(df["rooms"].dropna().unique().tolist())
-        sel_rooms = st.multiselect(
-            "Комнат", rooms_all,
-            default=[],
-            key=f"flt_rooms_{v}",
-        )
+        sel_rooms = st.multiselect("Комнат", rooms_all, default=[], key=f"flt_rooms_{v}")
     else:
         sel_rooms = []
 
-    # ------- ПЛОЩАДЬ -------
     area_from = st.number_input(
-        "Площадь от, м²", min_value=0.0,
-        value=0.0,
-        step=1.0, key=f"flt_area_from_{v}",
+        "Площадь от, м²", min_value=0.0, value=0.0, step=1.0,
+        key=f"flt_area_from_{v}",
     )
 
-    # ------- ИПОТЕКА -------
     only_mortgage = st.checkbox(
-        "Только со льготной ипотекой",
-        value=False,
-        key=f"flt_mortgage_{v}",
+        "Только со льготной ипотекой", value=False, key=f"flt_mortgage_{v}",
     )
 
     return {
@@ -406,21 +413,6 @@ def render_filters():
     }
 
 
-# ======================== РЕНДЕР ФИЛЬТРОВ ========================
-# На десктопе используем sidebar, на мобильных — expander в основном потоке.
-# Streamlit не даёт надёжно определить устройство, поэтому рендерим ОБА варианта,
-# но один из них скрываем через CSS (см. выше: на мобильных sidebar скрыт).
-#
-# Однако у нас проблема: если рендерить фильтры дважды, ключи виджетов конфликтуют.
-# Решение: всегда рендерим только в sidebar, а на мобильных sidebar скрываем,
-# НО добавляем в основной поток expander, который содержит ДУБЛЬ фильтров с другими ключами.
-#
-# Чтобы не дублировать логику, используем "зеркальные" фильтры через session_state.
-
-# ---- ПРОСТОЕ РЕШЕНИЕ: всегда используем expander в основном потоке ----
-# Sidebar больше не используется для фильтров.
-# На десктопе expander выглядит как обычная панель, которую можно свернуть.
-
 with st.expander("🔍 Показать фильтры", expanded=False):
     filters = render_filters()
 
@@ -439,7 +431,39 @@ area_from = filters["area_from"]
 only_mortgage = filters["only_mortgage"]
 
 
+# ======================== ХЭШ СОСТОЯНИЯ ФИЛЬТРОВ ========================
+# Формируем строку из всех значений фильтров и хэшируем.
+# Если хэш изменился — фильтры были пересчитаны.
+filters_signature = "|".join([
+    ",".join(map(str, sorted(sel_cities))),
+    ",".join(map(str, sorted(sel_sources))),
+    ",".join(map(str, sorted(sel_devs))),
+    ",".join(map(str, sorted(sel_classes))),
+    ",".join(map(str, sorted(map(str, sel_rooms)))),
+    str(price_from), str(price_to),
+    str(floor_from), str(floor_to),
+    str(metro_from), str(metro_to),
+    str(area_from), str(only_mortgage),
+])
+current_hash = hashlib.md5(filters_signature.encode("utf-8")).hexdigest()
+
+filters_changed = (
+    st.session_state.prev_filters_hash is not None
+    and st.session_state.prev_filters_hash != current_hash
+)
+filters_reset_just_now = st.session_state.filters_just_reset
+
+# Обновляем сохранённый хэш и сбрасываем флаг
+st.session_state.prev_filters_hash = current_hash
+st.session_state.filters_just_reset = False
+
+
 # ======================== ФИЛЬТРАЦИЯ ========================
+# Спиннер показывается, только если фильтры поменялись — визуальная обратная связь
+if filters_changed or filters_reset_just_now:
+    with st.spinner("Применяем фильтры…"):
+        time.sleep(0.25)  # короткая пауза, чтобы спиннер успел появиться
+
 f = df.copy()
 
 if sel_cities:
@@ -479,6 +503,29 @@ if only_mortgage and "mortgage_allowed" in f.columns:
     f = f[f["mortgage_allowed"] == True]
 
 f = f.reset_index(drop=True)
+
+
+# ======================== ПЛАШКА "ФИЛЬТРЫ ПРИМЕНЕНЫ" ========================
+if filters_reset_just_now:
+    st.markdown(
+        f"""
+        <div class="filters-reset">
+            <span style="font-size:20px;">♻️</span>
+            <span>Фильтры <b>сброшены</b>. Показано <b>{len(f)}</b> из {len(df)} ЖК.</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+elif filters_changed:
+    st.markdown(
+        f"""
+        <div class="filters-applied">
+            <span style="font-size:20px;">✅</span>
+            <span>Фильтры <b>применены</b>. Найдено <b>{len(f)}</b> из {len(df)} ЖК.</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # ======================== RENDER CARD ========================
@@ -763,10 +810,4 @@ elif active_tab == "📊 Аналитика":
                 st.subheader("Средняя цена за м² по городам")
                 st.bar_chart(grp)
 
-        if "developer" in f.columns and f["developer"].notna().any():
-            st.subheader("Топ застройщиков по числу ЖК")
-            st.bar_chart(f["developer"].value_counts().head(15))
-
-        if "completion_year" in f.columns and f["completion_year"].notna().any():
-            st.subheader("Распределение по годам сдачи")
-            st.bar_chart(f["completion_year"].value_counts().sort_index())
+        if "developer" in f.columns and f["
